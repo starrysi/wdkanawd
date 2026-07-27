@@ -1,6 +1,5 @@
 const { Client, GatewayIntentBits, ButtonBuilder, ButtonStyle, ActionRowBuilder } = require('discord.js');
 const express = require('express');
-const crypto = require('crypto');
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID || '1531095882983014572';
@@ -33,26 +32,26 @@ client.on('interactionCreate', async (interaction) => {
     clearTimeout(resolver.timeout);
     pending.delete(requestId);
 
-    if (interaction.customId === 'confirm_device') {
+    if (interaction.customId === 'perm_accept') {
         await interaction.update({
             content: '**Perm Accept**',
             components: [
                 new ActionRowBuilder()
                     .addComponents(
-                        new ButtonBuilder().setCustomId('confirm_device').setLabel('Confirm Device').setStyle(ButtonStyle.Success).setDisabled(true),
-                        new ButtonBuilder().setCustomId('revoke_device').setLabel('Revoke').setStyle(ButtonStyle.Danger).setDisabled(true)
+                        new ButtonBuilder().setCustomId('perm_accept').setLabel('Perm Accept').setStyle(ButtonStyle.Success).setDisabled(true),
+                        new ButtonBuilder().setCustomId('perm_revoke').setLabel('Perm Revoke').setStyle(ButtonStyle.Danger).setDisabled(true)
                     )
             ]
         });
         resolver.resolve({ status: 'accepted' });
-    } else if (interaction.customId === 'revoke_device') {
+    } else if (interaction.customId === 'perm_revoke') {
         await interaction.update({
             content: '**Perm Cancel**',
             components: [
                 new ActionRowBuilder()
                     .addComponents(
-                        new ButtonBuilder().setCustomId('confirm_device').setLabel('Confirm Device').setStyle(ButtonStyle.Success).setDisabled(true),
-                        new ButtonBuilder().setCustomId('revoke_device').setLabel('Revoke').setStyle(ButtonStyle.Danger).setDisabled(true)
+                        new ButtonBuilder().setCustomId('perm_accept').setLabel('Perm Accept').setStyle(ButtonStyle.Success).setDisabled(true),
+                        new ButtonBuilder().setCustomId('perm_revoke').setLabel('Perm Revoke').setStyle(ButtonStyle.Danger).setDisabled(true)
                     )
             ]
         });
@@ -62,14 +61,16 @@ client.on('interactionCreate', async (interaction) => {
 
 app.post('/auth', async (req, res) => {
     try {
+        const pcName = req.body.pcName || 'Unknown';
+        const hwid = req.body.hwid || 'Unknown';
         const channel = await client.channels.fetch(CHANNEL_ID);
         const msg = await channel.send({
-            content: '**Authorization Required**',
+            content: `**(HWID: ${hwid}) (${pcName}) is trying to open the mod auth request**`,
             components: [
                 new ActionRowBuilder()
                     .addComponents(
-                        new ButtonBuilder().setCustomId('confirm_device').setLabel('Confirm Device').setStyle(ButtonStyle.Success),
-                        new ButtonBuilder().setCustomId('revoke_device').setLabel('Revoke').setStyle(ButtonStyle.Danger)
+                        new ButtonBuilder().setCustomId('perm_accept').setLabel('Perm Accept').setStyle(ButtonStyle.Success),
+                        new ButtonBuilder().setCustomId('perm_revoke').setLabel('Perm Revoke').setStyle(ButtonStyle.Danger)
                     )
             ]
         });
@@ -83,8 +84,8 @@ app.post('/auth', async (req, res) => {
                         components: [
                             new ActionRowBuilder()
                                 .addComponents(
-                                    new ButtonBuilder().setCustomId('confirm_device').setLabel('Confirm Device').setStyle(ButtonStyle.Success).setDisabled(true),
-                                    new ButtonBuilder().setCustomId('revoke_device').setLabel('Revoke').setStyle(ButtonStyle.Danger).setDisabled(true)
+                                    new ButtonBuilder().setCustomId('perm_accept').setLabel('Perm Accept').setStyle(ButtonStyle.Success).setDisabled(true),
+                                    new ButtonBuilder().setCustomId('perm_revoke').setLabel('Perm Revoke').setStyle(ButtonStyle.Danger).setDisabled(true)
                                 )
                         ]
                     });
