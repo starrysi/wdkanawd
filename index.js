@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, ButtonBuilder, ButtonStyle, ActionRowBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, ButtonBuilder, ButtonStyle, ActionRowBuilder, EmbedBuilder } = require('discord.js');
 const express = require('express');
 const fs = require('fs');
 
@@ -29,11 +29,11 @@ const pending = new Map();
 
 client.once('ready', () => console.log(`Bot ready as ${client.user.tag}`));
 
-function disabledRow(acceptId, acceptLabel, revokeId, revokeLabel) {
+function disabledRow() {
     return new ActionRowBuilder()
         .addComponents(
-            new ButtonBuilder().setCustomId(acceptId).setLabel(acceptLabel).setStyle(ButtonStyle.Success).setDisabled(true),
-            new ButtonBuilder().setCustomId(revokeId).setLabel(revokeLabel).setStyle(ButtonStyle.Danger).setDisabled(true)
+            new ButtonBuilder().setCustomId('accept').setLabel('Accept').setStyle(ButtonStyle.Success).setDisabled(true),
+            new ButtonBuilder().setCustomId('revoke').setLabel('Revoke').setStyle(ButtonStyle.Danger).setDisabled(true)
         );
 }
 
@@ -44,13 +44,6 @@ function fourButtonRow() {
             new ButtonBuilder().setCustomId('perm_accept').setLabel('Perm Accept').setStyle(ButtonStyle.Success),
             new ButtonBuilder().setCustomId('revoke').setLabel('Revoke').setStyle(ButtonStyle.Danger),
             new ButtonBuilder().setCustomId('perm_revoke').setLabel('Perm Revoke').setStyle(ButtonStyle.Danger)
-        );
-}
-
-function singleButtonRow(id, label, style) {
-    return new ActionRowBuilder()
-        .addComponents(
-            new ButtonBuilder().setCustomId(id).setLabel(label).setStyle(style)
         );
 }
 
@@ -71,11 +64,7 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.customId === 'cancel_perm') {
         delete permStatuses[resolver.hwid];
         savePerms();
-        await interaction.update({
-            content: `Perm cancelled for **${resolver.hwid}**. Re-prompting...`,
-            components: []
-        });
-        // Re-prompt with 4 buttons
+        await interaction.update({ content: `Perm cancelled for **${resolver.hwid}**.`, components: [] });
         const msg = await interaction.channel.send({
             content: `**(HWID: ${resolver.hwid}) (${resolver.pcName}) is trying to open the mod auth request**`,
             components: [fourButtonRow()]
@@ -83,9 +72,7 @@ client.on('interactionCreate', async (interaction) => {
         const newRes = await new Promise((resolve) => {
             const t = setTimeout(async () => {
                 pending.delete(msg.id);
-                try {
-                    await msg.edit({ content: '**No Perm Accept**', components: [disabledRow('accept', 'Accept', 'perm_revoke', 'Perm Revoke')] });
-                } catch {}
+                try { await msg.edit({ content: '**No Perm Accept**', components: [disabledRow()] }); } catch {}
                 resolve({ status: 'timeout' });
             }, 5000);
             pending.set(msg.id, { resolve, timeout: t, hwid: resolver.hwid, pcName: resolver.pcName });
@@ -112,11 +99,11 @@ client.on('interactionCreate', async (interaction) => {
         content = '**Perm Cancel (Permanent)**';
         status = 'denied';
     } else {
-        await interaction.reply({ content: 'Unknown button.', ephemeral: true });
+        await interaction.reply({ content: 'Unknown.', ephemeral: true });
         return;
     }
 
-    await interaction.update({ content, components: [disabledRow('accept', 'Accept', 'perm_revoke', 'Perm Revoke')] });
+    await interaction.update({ content, components: [disabledRow()] });
     resolver.resolve({ status });
 });
 
@@ -129,12 +116,12 @@ app.post('/auth', async (req, res) => {
         if (permStatuses[hwid] === 'accepted') {
             const msg = await channel.send({
                 content: `**(HWID: ${hwid}) (${pcName}) is trying to open - PERM ACCEPTED**\nClick Cancel Perm to remove it.`,
-                components: [singleButtonRow('cancel_perm', 'Cancel Perm', ButtonStyle.Secondary)]
+                components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('cancel_perm').setLabel('Cancel Perm').setStyle(ButtonStyle.Secondary))]
             });
             const result = await new Promise((resolve) => {
                 const t = setTimeout(async () => {
                     pending.delete(msg.id);
-                    try { await msg.edit({ content: '**Perm Accept** (auto)', components: [disabledRow('accept', 'Accept', 'perm_revoke', 'Perm Revoke')] }); } catch {}
+                    try { await msg.edit({ content: '**Perm Accept** (auto)', components: [disabledRow()] }); } catch {}
                     resolve({ status: 'accepted' });
                 }, 5000);
                 pending.set(msg.id, { resolve, timeout: t, hwid, pcName });
@@ -145,12 +132,12 @@ app.post('/auth', async (req, res) => {
         if (permStatuses[hwid] === 'denied') {
             const msg = await channel.send({
                 content: `**(HWID: ${hwid}) (${pcName}) is trying to open - PERM REVOKED**\nClick Cancel Perm to remove it.`,
-                components: [singleButtonRow('cancel_perm', 'Cancel Perm', ButtonStyle.Secondary)]
+                components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('cancel_perm').setLabel('Cancel Perm').setStyle(ButtonStyle.Secondary))]
             });
             const result = await new Promise((resolve) => {
                 const t = setTimeout(async () => {
                     pending.delete(msg.id);
-                    try { await msg.edit({ content: '**Perm Cancel** (auto)', components: [disabledRow('accept', 'Accept', 'perm_revoke', 'Perm Revoke')] }); } catch {}
+                    try { await msg.edit({ content: '**Perm Cancel** (auto)', components: [disabledRow()] }); } catch {}
                     resolve({ status: 'denied' });
                 }, 5000);
                 pending.set(msg.id, { resolve, timeout: t, hwid, pcName });
@@ -166,9 +153,7 @@ app.post('/auth', async (req, res) => {
         const result = await new Promise((resolve) => {
             const timeout = setTimeout(async () => {
                 pending.delete(msg.id);
-                try {
-                    await msg.edit({ content: '**No Perm Accept**', components: [disabledRow('accept', 'Accept', 'perm_revoke', 'Perm Revoke')] });
-                } catch {}
+                try { await msg.edit({ content: '**No Perm Accept**', components: [disabledRow()] }); } catch {}
                 resolve({ status: 'timeout' });
             }, 5000);
             pending.set(msg.id, { resolve, timeout, hwid, pcName });
@@ -178,6 +163,31 @@ app.post('/auth', async (req, res) => {
     } catch (err) {
         console.error('Auth error:', err);
         res.status(500).json({ status: 'error', message: err.message });
+    }
+});
+
+app.post('/alert', async (req, res) => {
+    try {
+        const pcName = req.body.pcName || 'Unknown';
+        const hwid = req.body.hwid || 'Unknown';
+        const message = req.body.message || 'Unknown alert';
+        const channel = await client.channels.fetch(CHANNEL_ID);
+
+        const embed = new EmbedBuilder()
+            .setColor(0xFF0000)
+            .setTitle(':warning: Guard Alert')
+            .addFields(
+                { name: 'PC', value: pcName, inline: true },
+                { name: 'HWID', value: hwid, inline: true },
+                { name: 'Message', value: message }
+            )
+            .setTimestamp();
+
+        await channel.send({ embeds: [embed] });
+        res.json({ status: 'ok' });
+    } catch (err) {
+        console.error('Alert error:', err);
+        res.status(500).json({ status: 'error' });
     }
 });
 
