@@ -4,7 +4,6 @@ const fs = require('fs');
 
 const TOKEN = process.env.DISCORD_TOKEN;
 const AUTH_CHANNEL_ID = process.env.AUTH_CHANNEL_ID || '1531095882983014572';
-const VERIFY_CHANNEL_ID = process.env.VERIFY_CHANNEL_ID || '1532186584353345667';
 const PORT = process.env.PORT || 3000;
 const STORAGE = process.env.STORAGE || '/data/perm-statuses.json';
 
@@ -26,166 +25,57 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBit
 const app = express();
 app.use(express.json());
 
-const pending = new Map();
-
 client.once('ready', () => console.log(`Bot ready as ${client.user.tag}`));
 
-function disabledRow() {
+function cancelRow() {
     return new ActionRowBuilder()
         .addComponents(
-            new ButtonBuilder().setCustomId('verify').setLabel('Verify').setStyle(ButtonStyle.Success).setDisabled(true),
+            new ButtonBuilder().setCustomId('cancel').setLabel('Cancel').setStyle(ButtonStyle.Danger)
+        );
+}
+
+function disabledCancelRow() {
+    return new ActionRowBuilder()
+        .addComponents(
             new ButtonBuilder().setCustomId('cancel').setLabel('Cancel').setStyle(ButtonStyle.Danger).setDisabled(true)
-        );
-}
-
-function actionRow() {
-    return new ActionRowBuilder()
-        .addComponents(
-            new ButtonBuilder().setCustomId('verify').setLabel('Verify').setStyle(ButtonStyle.Success),
-            new ButtonBuilder().setCustomId('perm_verify').setLabel('Perm Verify').setStyle(ButtonStyle.Primary),
-            new ButtonBuilder().setCustomId('cancel').setLabel('Cancel').setStyle(ButtonStyle.Danger),
-            new ButtonBuilder().setCustomId('perm_cancel').setLabel('Perm Cancel').setStyle(ButtonStyle.Danger)
-        );
-}
-
-function removeAllRow() {
-    return new ActionRowBuilder()
-        .addComponents(
-            new ButtonBuilder().setCustomId('remove_all').setLabel('Remove All').setStyle(ButtonStyle.Danger)
         );
 }
 
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
+    if (interaction.customId !== 'cancel' || interaction.channelId !== AUTH_CHANNEL_ID) return;
 
-    if (interaction.customId === 'remove_all') {
-        if (interaction.channelId !== AUTH_CHANNEL_ID) return;
-        const count = Object.keys(permStatuses).length;
-        permStatuses = {};
-        savePerms();
-        await interaction.reply({ content: `**Removed all (${count}) permanent statuses.**`, ephemeral: false });
+    const msg = interaction.message;
+    const match = msg.content.match(/HWID:\s*`([^`]+)`/);
+    if (!match) {
+        await interaction.reply({ content: 'Could not find HWID in message.', ephemeral: true });
         return;
     }
 
-    if (interaction.channelId !== AUTH_CHANNEL_ID) return;
+    const hwid = match[1];
+    permStatuses[hwid] = 'denied';
+    savePerms();
 
-    const msgId = interaction.message.id;
-    const resolver = pending.get(msgId);
-
-    if (!resolver) {
-        if (interaction.customId === 'cancel') {
-            await interaction.reply({ content: 'Already resolved.', ephemeral: true });
-        } else if (interaction.customId === 'verify' || interaction.customId === 'perm_verify') {
-            await interaction.reply({ content: 'Expired.', ephemeral: true });
-        }
-        return;
-    }
-
-    clearTimeout(resolver.timeout);
-    pending.delete(msgId);
-
-    if (interaction.customId === 'cancel_perm') {
-        delete permStatuses[resolver.hwid];
-        savePerms();
-        await interaction.update({ content: `Perm cancelled for **${resolver.hwid}**.`, components: [] });
-        const msg = await interaction.channel.send({
-            content: `**(HWID: ${resolver.hwid}) (${resolver.pcName}) is trying to open the mod auth request**`,
-            components: [actionRow(), removeAllRow()]
-        });
-        const timeout = setTimeout(async () => {
-            pending.delete(msg.id);
-            try { await msg.edit({ content: `**(HWID: ${resolver.hwid}) (${resolver.pcName}) - Timed Out**`, components: [disabledRow()] }); } catch {}
-            resolver.resolve({ status: 'timeout' });
-        }, 40000);
-        pending.set(msg.id, { resolve: resolver.resolve, timeout, hwid: resolver.hwid, pcName: resolver.pcName });
-        return;
-    }
-
-    let status, actionLabel;
-    if (interaction.customId === 'verify') {
-        status = 'accepted';
-        actionLabel = 'Verified';
-        try {
-            const verifyChannel = await client.channels.fetch(VERIFY_CHANNEL_ID);
-            if (verifyChannel) {
-                await verifyChannel.send(`**Player Verified** - HWID: \`${resolver.hwid}\` | PC: \`${resolver.pcName}\``);
-            }
-        } catch (err) {
-            console.error('Failed to send verify message:', err);
-        }
-    } else if (interaction.customId === 'perm_verify') {
-        permStatuses[resolver.hwid] = 'accepted';
-        savePerms();
-        status = 'accepted';
-        actionLabel = 'Verified (Permanent)';
-        try {
-            const verifyChannel = await client.channels.fetch(VERIFY_CHANNEL_ID);
-            if (verifyChannel) {
-                await verifyChannel.send(`**Player Verified (Permanent)** - HWID: \`${resolver.hwid}\` | PC: \`${resolver.pcName}\``);
-            }
-        } catch (err) {
-            console.error('Failed to send verify message:', err);
-        }
-    } else if (interaction.customId === 'cancel') {
-        status = 'denied';
-        actionLabel = 'Canceled';
-    } else if (interaction.customId === 'perm_cancel') {
-        permStatuses[resolver.hwid] = 'denied';
-        savePerms();
-        status = 'denied';
-        actionLabel = 'Canceled (Permanent)';
-    } else {
-        await interaction.reply({ content: 'Unknown.', ephemeral: true });
-        return;
-    }
-
-    await interaction.update({ content: `**(HWID: ${resolver.hwid}) (${resolver.pcName}) - ${actionLabel}**`, components: [disabledRow()] });
-    resolver.resolve({ status });
+    await interaction.update({ content: `**Canceled** - ${msg.content}`, components: [disabledCancelRow()] });
+    await interaction.followUp({ content: `Game will close for **${hwid}** on next poll.`, ephemeral: false });
 });
 
 app.post('/auth', async (req, res) => {
     try {
         const pcName = req.body.pcName || 'Unknown';
         const hwid = req.body.hwid || 'Unknown';
-        const channel = await client.channels.fetch(AUTH_CHANNEL_ID);
 
-        const waitForAction = async (msg) => {
-            return await new Promise((resolve) => {
-                const timeout = setTimeout(async () => {
-                    pending.delete(msg.id);
-                    try { await msg.edit({ content: `**(HWID: ${hwid}) (${pcName}) - Timed Out**`, components: [disabledRow()] }); } catch {}
-                    resolve({ status: 'timeout' });
-                }, 40000);
-                pending.set(msg.id, { resolve, timeout, hwid, pcName });
+        try {
+            const channel = await client.channels.fetch(AUTH_CHANNEL_ID);
+            await channel.send({
+                content: `**Logged in** - PC: \`${pcName}\` | HWID: \`${hwid}\``,
+                components: [cancelRow()]
             });
-        };
-
-        if (permStatuses[hwid] === 'accepted') {
-            const msg = await channel.send({
-                content: `**(HWID: ${hwid}) (${pcName}) is trying to open - PERM VERIFIED**\nClick Cancel Perm to remove it.`,
-                components: [new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId('cancel_perm').setLabel('Cancel Perm').setStyle(ButtonStyle.Secondary)
-                ), removeAllRow()]
-            });
-            return res.json(await waitForAction(msg));
+        } catch (err) {
+            console.error('Failed to send auth message:', err);
         }
 
-        if (permStatuses[hwid] === 'denied') {
-            const msg = await channel.send({
-                content: `**(HWID: ${hwid}) (${pcName}) is trying to open - PERM CANCELED**\nClick Cancel Perm to remove it.`,
-                components: [new ActionRowBuilder().addComponents(
-                    new ButtonBuilder().setCustomId('cancel_perm').setLabel('Cancel Perm').setStyle(ButtonStyle.Secondary)
-                ), removeAllRow()]
-            });
-            return res.json(await waitForAction(msg));
-        }
-
-        const msg = await channel.send({
-            content: `**(HWID: ${hwid}) (${pcName}) is trying to open the mod auth request**`,
-            components: [actionRow(), removeAllRow()]
-        });
-
-        res.json(await waitForAction(msg));
+        res.json({ status: 'accepted' });
     } catch (err) {
         console.error('Auth error:', err);
         res.status(500).json({ status: 'error', message: err.message });
@@ -220,16 +110,12 @@ app.post('/alert', async (req, res) => {
 app.get('/check/:hwid', (req, res) => {
     const hwid = req.params.hwid;
     const stored = permStatuses[hwid];
-    let isPending = false;
-    for (const entry of pending.values()) {
-        if (entry.hwid === hwid) { isPending = true; break; }
-    }
-    const status = stored ? stored : (isPending ? 'pending' : 'unknown');
+    const status = stored === 'denied' ? 'denied' : 'accepted';
     res.json({ status });
 });
 
 app.get('/health', (req, res) => {
-    res.json({ status: 'ok', bot: client.isReady(), perms: Object.keys(permStatuses).length });
+    res.json({ status: 'ok', bot: client.isReady(), denials: Object.keys(permStatuses).length });
 });
 
 client.login(TOKEN);
