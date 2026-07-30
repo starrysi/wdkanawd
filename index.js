@@ -99,10 +99,10 @@ client.on('interactionCreate', async (interaction) => {
         return;
     }
 
-    let status, content;
+    let status, actionLabel;
     if (interaction.customId === 'verify') {
         status = 'accepted';
-        content = '**User Verified**';
+        actionLabel = 'Verified';
         try {
             const verifyChannel = await client.channels.fetch(VERIFY_CHANNEL_ID);
             if (verifyChannel) {
@@ -115,7 +115,7 @@ client.on('interactionCreate', async (interaction) => {
         permStatuses[resolver.hwid] = 'accepted';
         savePerms();
         status = 'accepted';
-        content = '**User Verified (Permanent)**';
+        actionLabel = 'Verified (Permanent)';
         try {
             const verifyChannel = await client.channels.fetch(VERIFY_CHANNEL_ID);
             if (verifyChannel) {
@@ -126,18 +126,18 @@ client.on('interactionCreate', async (interaction) => {
         }
     } else if (interaction.customId === 'cancel') {
         status = 'denied';
-        content = '**User Canceled**';
+        actionLabel = 'Canceled';
     } else if (interaction.customId === 'perm_cancel') {
         permStatuses[resolver.hwid] = 'denied';
         savePerms();
         status = 'denied';
-        content = '**User Canceled (Permanent)**';
+        actionLabel = 'Canceled (Permanent)';
     } else {
         await interaction.reply({ content: 'Unknown.', ephemeral: true });
         return;
     }
 
-    await interaction.update({ content, components: [disabledRow()] });
+    await interaction.update({ content: `**(HWID: ${resolver.hwid}) (${resolver.pcName}) - ${actionLabel}**`, components: [disabledRow()] });
     resolver.resolve({ status });
 });
 
@@ -147,6 +147,17 @@ app.post('/auth', async (req, res) => {
         const hwid = req.body.hwid || 'Unknown';
         const channel = await client.channels.fetch(AUTH_CHANNEL_ID);
 
+        const waitForAction = async (msg) => {
+            return await new Promise((resolve) => {
+                const timeout = setTimeout(async () => {
+                    pending.delete(msg.id);
+                    try { await msg.edit({ content: `**(HWID: ${hwid}) (${pcName}) - Timed Out**`, components: [disabledRow()] }); } catch {}
+                    resolve({ status: 'timeout' });
+                }, 40000);
+                pending.set(msg.id, { resolve, timeout, hwid, pcName });
+            });
+        };
+
         if (permStatuses[hwid] === 'accepted') {
             const msg = await channel.send({
                 content: `**(HWID: ${hwid}) (${pcName}) is trying to open - PERM VERIFIED**\nClick Cancel Perm to remove it.`,
@@ -154,10 +165,7 @@ app.post('/auth', async (req, res) => {
                     new ButtonBuilder().setCustomId('cancel_perm').setLabel('Cancel Perm').setStyle(ButtonStyle.Secondary)
                 ), removeAllRow()]
             });
-            const result = await new Promise((resolve) => {
-                pending.set(msg.id, { resolve, hwid, pcName });
-            });
-            return res.json(result);
+            return res.json(await waitForAction(msg));
         }
 
         if (permStatuses[hwid] === 'denied') {
@@ -167,10 +175,7 @@ app.post('/auth', async (req, res) => {
                     new ButtonBuilder().setCustomId('cancel_perm').setLabel('Cancel Perm').setStyle(ButtonStyle.Secondary)
                 ), removeAllRow()]
             });
-            const result = await new Promise((resolve) => {
-                pending.set(msg.id, { resolve, hwid, pcName });
-            });
-            return res.json(result);
+            return res.json(await waitForAction(msg));
         }
 
         const msg = await channel.send({
@@ -178,11 +183,7 @@ app.post('/auth', async (req, res) => {
             components: [actionRow(), removeAllRow()]
         });
 
-        const result = await new Promise((resolve) => {
-            pending.set(msg.id, { resolve, hwid, pcName });
-        });
-
-        res.json(result);
+        res.json(await waitForAction(msg));
     } catch (err) {
         console.error('Auth error:', err);
         res.status(500).json({ status: 'error', message: err.message });
