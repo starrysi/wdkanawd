@@ -22,7 +22,7 @@ function savePerms() {
     try { fs.writeFileSync(STORAGE, JSON.stringify(permStatuses, null, 2)); } catch {}
 }
 
-const client = new Client({ intents: [GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] });
 const app = express();
 app.use(express.json());
 
@@ -92,10 +92,12 @@ client.on('interactionCreate', async (interaction) => {
             content: `**(HWID: ${resolver.hwid}) (${resolver.pcName}) is trying to open the mod auth request**`,
             components: [actionRow(), removeAllRow()]
         });
-        const newRes = await new Promise((resolve) => {
-            pending.set(msg.id, { resolve, hwid: resolver.hwid, pcName: resolver.pcName });
-        });
-        resolver.resolve(newRes);
+        const timeout = setTimeout(async () => {
+            pending.delete(msg.id);
+            try { await msg.edit({ content: `**(HWID: ${resolver.hwid}) (${resolver.pcName}) - Timed Out**`, components: [disabledRow()] }); } catch {}
+            resolver.resolve({ status: 'timeout' });
+        }, 40000);
+        pending.set(msg.id, { resolve: resolver.resolve, timeout, hwid: resolver.hwid, pcName: resolver.pcName });
         return;
     }
 
