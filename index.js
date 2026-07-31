@@ -34,30 +34,50 @@ function cancelRow() {
         );
 }
 
-function disabledCancelRow() {
+function verifyRow() {
     return new ActionRowBuilder()
         .addComponents(
-            new ButtonBuilder().setCustomId('cancel').setLabel('Cancel').setStyle(ButtonStyle.Danger).setDisabled(true)
+            new ButtonBuilder().setCustomId('verify').setLabel('Verify').setStyle(ButtonStyle.Success)
         );
+}
+
+function parseMsg(msg) {
+    const hwidMatch = msg.content.match(/HWID:\s*`([^`]+)`/);
+    const pcNameMatch = msg.content.match(/PC:\s*`([^`]+)`/);
+    return {
+        hwid: hwidMatch ? hwidMatch[1] : null,
+        pcName: pcNameMatch ? pcNameMatch[1] : 'Unknown'
+    };
 }
 
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
-    if (interaction.customId !== 'cancel' || interaction.channelId !== AUTH_CHANNEL_ID) return;
+    if (interaction.channelId !== AUTH_CHANNEL_ID) return;
+    if (interaction.customId !== 'cancel' && interaction.customId !== 'verify') return;
 
-    const msg = interaction.message;
-    const match = msg.content.match(/HWID:\s*`([^`]+)`/);
-    if (!match) {
+    const { hwid, pcName } = parseMsg(interaction.message);
+    if (!hwid) {
         await interaction.reply({ content: 'Could not find HWID in message.', ephemeral: true });
         return;
     }
 
-    const hwid = match[1];
-    permStatuses[hwid] = 'denied';
-    savePerms();
-
-    await interaction.update({ content: `**Canceled** - ${msg.content}`, components: [disabledCancelRow()] });
-    await interaction.followUp({ content: `Game will close for **${hwid}** on next poll.`, ephemeral: false });
+    if (interaction.customId === 'cancel') {
+        permStatuses[hwid] = 'denied';
+        savePerms();
+        await interaction.update({
+            content: `**Canceled** - PC: \`${pcName}\` | HWID: \`${hwid}\``,
+            components: [verifyRow()]
+        });
+        await interaction.followUp({ content: `Game will close for **${hwid}**. Click Verify to let them back in.`, ephemeral: false });
+    } else {
+        delete permStatuses[hwid];
+        savePerms();
+        await interaction.update({
+            content: `**Verified** - PC: \`${pcName}\` | HWID: \`${hwid}\``,
+            components: [cancelRow()]
+        });
+        await interaction.followUp({ content: `**${hwid}** can join again.`, ephemeral: false });
+    }
 });
 
 app.post('/auth', async (req, res) => {
@@ -67,15 +87,22 @@ app.post('/auth', async (req, res) => {
 
         try {
             const channel = await client.channels.fetch(AUTH_CHANNEL_ID);
+            const denied = permStatuses[hwid] === 'denied';
             await channel.send({
-                content: `**Logged in** - PC: \`${pcName}\` | HWID: \`${hwid}\``,
-                components: [cancelRow()]
+                content: denied
+                    ? `**Blocked** - PC: \`${pcName}\` | HWID: \`${hwid}\``
+                    : `**Logged in** - PC: \`${pcName}\` | HWID: \`${hwid}\``,
+                components: denied ? [verifyRow()] : [cancelRow()]
             });
         } catch (err) {
             console.error('Failed to send auth message:', err);
         }
 
-        res.json({ status: 'accepted' });
+        if (permStatuses[hwid] === 'denied') {
+            res.json({ status: 'denied' });
+        } else {
+            res.json({ status: 'accepted' });
+        }
     } catch (err) {
         console.error('Auth error:', err);
         res.status(500).json({ status: 'error', message: err.message });
