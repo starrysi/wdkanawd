@@ -25,19 +25,30 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBit
 const app = express();
 app.use(express.json());
 
+const pending = new Map();
+
 client.once('ready', () => console.log(`Bot ready as ${client.user.tag}`));
 
-function cancelRow() {
+function acceptRow() {
     return new ActionRowBuilder()
         .addComponents(
-            new ButtonBuilder().setCustomId('cancel').setLabel('Cancel').setStyle(ButtonStyle.Danger)
+            new ButtonBuilder().setCustomId('accept').setLabel('Accept').setStyle(ButtonStyle.Success),
+            new ButtonBuilder().setCustomId('deny').setLabel('Deny').setStyle(ButtonStyle.Danger)
         );
 }
 
-function verifyRow() {
+function revokeRow() {
     return new ActionRowBuilder()
         .addComponents(
-            new ButtonBuilder().setCustomId('verify').setLabel('Verify').setStyle(ButtonStyle.Success)
+            new ButtonBuilder().setCustomId('revoke').setLabel('Revoke').setStyle(ButtonStyle.Danger)
+        );
+}
+
+function disabledRow() {
+    return new ActionRowBuilder()
+        .addComponents(
+            new ButtonBuilder().setCustomId('accept').setLabel('Accept').setStyle(ButtonStyle.Success).setDisabled(true),
+            new ButtonBuilder().setCustomId('deny').setLabel('Deny').setStyle(ButtonStyle.Danger).setDisabled(true)
         );
 }
 
@@ -53,7 +64,6 @@ function parseMsg(msg) {
 client.on('interactionCreate', async (interaction) => {
     if (!interaction.isButton()) return;
     if (interaction.channelId !== AUTH_CHANNEL_ID) return;
-    if (interaction.customId !== 'cancel' && interaction.customId !== 'verify') return;
 
     const { hwid, pcName } = parseMsg(interaction.message);
     if (!hwid) {
@@ -61,22 +71,30 @@ client.on('interactionCreate', async (interaction) => {
         return;
     }
 
-    if (interaction.customId === 'cancel') {
+    if (interaction.customId === 'accept') {
+        permStatuses[hwid] = 'accepted';
+        savePerms();
+        await interaction.update({
+            content: `**Accepted** - PC: \`${pcName}\` | HWID: \`${hwid}\``,
+            components: [revokeRow()]
+        });
+        await interaction.followUp({ content: `${hwid} is now permanently accepted.`, ephemeral: false });
+    } else if (interaction.customId === 'deny') {
         permStatuses[hwid] = 'denied';
         savePerms();
         await interaction.update({
-            content: `**Canceled** - PC: \`${pcName}\` | HWID: \`${hwid}\``,
-            components: [verifyRow()]
+            content: `**Denied** - PC: \`${pcName}\` | HWID: \`${hwid}\``,
+            components: [disabledRow()]
         });
-        await interaction.followUp({ content: `Game will close for **${hwid}**. Click Verify to let them back in.`, ephemeral: false });
-    } else {
+        await interaction.followUp({ content: `${hwid} is denied. They will be blocked on next check.`, ephemeral: false });
+    } else if (interaction.customId === 'revoke') {
         delete permStatuses[hwid];
         savePerms();
         await interaction.update({
-            content: `**Verified** - PC: \`${pcName}\` | HWID: \`${hwid}\``,
-            components: [cancelRow()]
+            content: `**Revoked** - PC: \`${pcName}\` | HWID: \`${hwid}\` (no longer accepted)`,
+            components: [acceptRow()]
         });
-        await interaction.followUp({ content: `**${hwid}** can join again.`, ephemeral: false });
+        await interaction.followUp({ content: `${hwid} has been revoked. They will need to re-accept.`, ephemeral: false });
     }
 });
 
@@ -85,24 +103,44 @@ app.post('/auth', async (req, res) => {
         const pcName = req.body.pcName || 'Unknown';
         const hwid = req.body.hwid || 'Unknown';
 
+        if (permStatuses[hwid] === 'accepted') {
+            res.json({ status: 'accepted' });
+            return;
+        }
+
+        if (permStatuses[hwid] === 'denied') {
+            res.json({ status: 'denied' });
+            return;
+        }
+
         try {
             const channel = await client.channels.fetch(AUTH_CHANNEL_ID);
-            const denied = permStatuses[hwid] === 'denied';
             await channel.send({
-                content: denied
-                    ? `**Blocked** - PC: \`${pcName}\` | HWID: \`${hwid}\``
-                    : `**Logged in** - PC: \`${pcName}\` | HWID: \`${hwid}\``,
-                components: denied ? [verifyRow()] : [cancelRow()]
+                content: `**Auth Request** - PC: \`${pcName}\` | HWID: \`${hwid}\`\nClick Accept to allow, Deny to block.`,
+                components: [acceptRow()]
             });
         } catch (err) {
             console.error('Failed to send auth message:', err);
         }
 
-        if (permStatuses[hwid] === 'denied') {
-            res.json({ status: 'denied' });
-        } else {
-            res.json({ status: 'accepted' });
-        }
+        const waitForAction = async (msg) => {
+            return await new Promise((resolve) => {
+                const timeout = setTimeout(async () => {
+                    pending.delete(msg.id);
+                    try { await msg.edit({ content: msg.content + '\n**Timed Out**', components: [disabledRow()] }); } catch {}
+                    resolve({ status: 'timeout' });
+                }, 60000);
+                pending.set(msg.id, { resolve, timeout, hwid, pcName });
+            });
+        };
+
+        const channel = await client.channels.fetch(AUTH_CHANNEL_ID);
+        const msg = await channel.send({
+            content: `**Auth Request** - PC: \`${pcName}\` | HWID: \`${hwid}\`\nClick Accept to allow, Deny to block.`,
+            components: [acceptRow()]
+        });
+
+        res.json(await waitForAction(msg));
     } catch (err) {
         console.error('Auth error:', err);
         res.status(500).json({ status: 'error', message: err.message });
@@ -137,12 +175,12 @@ app.post('/alert', async (req, res) => {
 app.get('/check/:hwid', (req, res) => {
     const hwid = req.params.hwid;
     const stored = permStatuses[hwid];
-    const status = stored === 'denied' ? 'denied' : 'accepted';
+    const status = stored === 'denied' ? 'denied' : (stored === 'accepted' ? 'accepted' : 'pending');
     res.json({ status });
 });
 
 app.get('/health', (req, res) => {
-    res.json({ status: 'ok', bot: client.isReady(), denials: Object.keys(permStatuses).length });
+    res.json({ status: 'ok', bot: client.isReady(), accepted: Object.keys(permStatuses).filter(k => permStatuses[k] === 'accepted').length, denied: Object.keys(permStatuses).filter(k => permStatuses[k] === 'denied').length });
 });
 
 client.login(TOKEN);
